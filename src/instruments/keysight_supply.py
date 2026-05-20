@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+from src.instruments.scpi_profiles import KEYSIGHT_E36300_PROFILE, SCPIProfile
+from src.instruments.visa_manager import MOCK_RESOURCE, VisaManager
+from src.measurements.safety import SafetyLimits
+from src.utils.units import CHANNELS, normalize_channel
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class MockChannelState:
+    voltage_v: float = 0.0
+    current_limit_a: float = 0.1
+    output_on: bool = False
+    load_ohm: float = 1_000.0
+
+
+@dataclass
+class MockVisaResource:
+    """Deterministic SCPI-like mock for GUI and test runs without hardware."""
+
+    selected_channel: str = "CH1"
+    channels: dict[str, MockChannelState] = field(
+        default_factory=lambda: {channel: MockChannelState() for channel in CHANNELS}
+    )
+    closed: bool = False
+
+    def write(self, command: str) -> None:
+        command = command.strip()
+        upper = command.upper()
+        if self.closed:
+            raise RuntimeError("Mock resource is closed")
+
+        if upper.startswith("INST:SEL"):
+            self.selected_channel = normalize_channel(command.split()[-1])
+            return
+
+        state = self.channels[self.selected_channel]
+        if upper.startswith("SOUR:FUNC"):
+            return
+        if upper.startswith("SOUR:VOLT"):
+            state.voltage_v = float(command.split()[-1])
+            return
+        if upper.startswith("SOUR:CURR"):
+            state.current_limit_a = float(command.split()[-1])
+            return
+        if upper == "OUTP ON":
+            state.output_on = True
+            return
+        if upper == "OUTP OFF":
+            state.output_on = False
+            return
+        if upper in {"*CLS", "*RST"}:
+            return
+        raise RuntimeError(f"Unsupported mock SCPI write: {command}")
+
+    def query(self, command: str) -> str:
+        command = command.strip()
+        upper = command.upper()
+        if self.closed:
+            raise RuntimeError("Mock resource is closed")
+
+        if upper == "*IDN?":
+            return "KEYSIGHT TECHNOLOGIES,E36312A,MOCK0000,1.0"
+        if upper == "MEAS:VOLT?":
+            return f"{self._measured_voltage():.9g}"
+        if upper == "MEAS:CURR?":
+            return f"{self._measured_current():.9g}"
+        if upper == "SYST:ERR?":
+            return '0,"No error"'
+        raise RuntimeError(f"Unsupported mock SCPI query: {command}")
+
+    def close(self) -> None:
+        self.closed = True
+
+    def _measured_current(self) -> float:
+        state = self.channels[self.selected_channel]
+        if not state.output_on:
+            return 0.0
+        ideal_current = state.voltage_v / state.load_ohm
+        return min(ideal_current, state.current_limit_a)
+
+    def _measured_voltage(self) -> float:
+        state = self.channels[self.selected_channel]
+        if not state.output_on:
+            return 0.0
+        ideal_current = state.voltage_v / state.load_ohm
+        if ideal_current > state.current_limit_a:
+            return state.current_limit_a * state.load_ohm
+        return state.voltage_v
+
+
+class KeysightSupply:
+    """High-level Keysight E36312A/E36300 supply driver."""
+
+    def __init__(
+        self,
+        resource_name: str | None = None,
+        *,
+        mock: bool = False,
+        profile: SCPIProfile = KEYSIGHT_E36300_PROFILE,
+        visa_manager: VisaManager | None = None,
+        safety_limits: SafetyLimits | None = None,
+    ) -> None:
+        self.resource_name = resource_name or (MOCK_RESOURCE if mock else "")
+        self.mock = mock or self.resource_name.upper().startswith("MOCK")
+        self.profile = profile
+        self.visa_manager = visa_manager or VisaManager()
+        self.safety_limits = safety_limits or SafetyLimits()
+        self.resource: Any | None = None
+
+    @property
+    def connected(self) -> bool:
+        return self.resource is not None
+
+    def connect(self, resource_name: str | None = None) -> None:
+        if resource_name:
+            self.resource_name = resource_name
+            self.mock = resource_name.upper().startswith("MOCK")
+
+        if self.connected:
+            return
+
+        if self.mock:
+            self.resource = MockVisaResource()
+        else:
+            if not self.resource_name:
+                raise RuntimeError("No VISA resource selected")
+            self.resource = self.visa_manager.open_resource(self.resource_name)
+
+        self._write(self.profile.clear_status)
+        LOGGER.info("Connected to %s", self.resource_name)
+
+    def disconnect(self) -> None:
+        if self.resource is not None:
+            try:
+                self.resource.close()
+            finally:
+                LOGGER.info("Disconnected from %s", self.resource_name)
+                self.resource = None
+
+    def identify(self) -> str:
+        return self._query(self.profile.identify)
+
+    def select_channel(self, channel: str | int) -> str:
+        normalized = normalize_channel(channel)
+        self._write(self.profile.format("select_channel", channel=normalized))
+        return normalized
+
+    def set_voltage(self, channel: str | int, voltage: float) -> None:
+        normalized = self.select_channel(channel)
+        self.safety_limits.validate_voltage(normalized, voltage)
+        self._write(self.profile.source_voltage_mode)
+        self._write(self.profile.format("set_voltage", value=voltage))
+
+    def set_current_limit(self, channel: str | int, current: float) -> None:
+        normalized = self.select_channel(channel)
+        self.safety_limits.validate_current(normalized, current)
+        self._write(self.profile.format("set_current", value=current))
+
+    def output_on(self, channel: str | int) -> None:
+        self.select_channel(channel)
+        self._write(self.profile.output_on)
+
+    def output_off(self, channel: str | int) -> None:
+        self.select_channel(channel)
+        self._write(self.profile.output_off)
+
+    def output_all_off(self) -> None:
+        for channel in CHANNELS:
+            try:
+                self.output_off(channel)
+            except Exception as exc:
+                LOGGER.warning("Could not turn %s off: %s", channel, exc)
+
+    def measure_voltage(self, channel: str | int) -> float:
+        self.select_channel(channel)
+        return float(self._query(self.profile.measure_voltage))
+
+    def measure_current(self, channel: str | int) -> float:
+        self.select_channel(channel)
+        return float(self._query(self.profile.measure_current))
+
+    def query_error(self) -> str:
+        return self._query(self.profile.query_error)
+
+    def ramp_to_zero_and_off(
+        self,
+        channel: str | int,
+        *,
+        step_v: float = 0.1,
+        delay_s: float = 0.03,
+    ) -> None:
+        normalized = normalize_channel(channel)
+        try:
+            current_voltage = max(0.0, self.measure_voltage(normalized))
+        except Exception:
+            current_voltage = 0.0
+
+        step = max(abs(step_v), 0.001)
+        while current_voltage > 0:
+            current_voltage = max(0.0, current_voltage - step)
+            self.set_voltage(normalized, current_voltage)
+            if delay_s:
+                time.sleep(delay_s)
+        self.output_off(normalized)
+
+    def safe_shutdown(self, *, close: bool = False) -> None:
+        if not self.connected:
+            return
+        for channel in CHANNELS:
+            try:
+                self.set_voltage(channel, 0.0)
+            except Exception as exc:
+                LOGGER.warning("Could not set %s to 0 V during shutdown: %s", channel, exc)
+        self.output_all_off()
+        if close:
+            self.disconnect()
+
+    def _require_resource(self) -> Any:
+        if self.resource is None:
+            raise RuntimeError("Instrument is not connected")
+        return self.resource
+
+    def _write(self, command: str) -> None:
+        LOGGER.debug("SCPI >> %s", command)
+        self._require_resource().write(command)
+
+    def _query(self, command: str) -> str:
+        LOGGER.debug("SCPI ?? %s", command)
+        response = str(self._require_resource().query(command)).strip()
+        LOGGER.debug("SCPI << %s", response)
+        return response
