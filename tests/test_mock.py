@@ -11,6 +11,9 @@ def test_mock_identify_and_measure() -> None:
         supply.set_current_limit("CH1", 0.1)
         supply.set_voltage("CH1", 1.0)
         supply.output_on("CH1")
+        assert supply.query_current_limit("CH1") == 0.1
+        assert supply.query_voltage_setpoint("CH1") == 1.0
+        assert supply.query_output_state("CH1") is True
         assert supply.measure_voltage("CH1") == 1.0
         assert supply.measure_current("CH1") == 0.001
     finally:

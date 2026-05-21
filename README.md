@@ -34,6 +34,8 @@ Requisitos:
 - Backend VISA instalado segun tu sistema.
 - Para hardware real, NI-VISA, Keysight IO Libraries o `pyvisa-py` con soporte
   adecuado para el bus usado.
+- En Linux con USBTMC y `pyvisa-py`, tambien se requiere `pyusb` y permisos de
+  usuario sobre el dispositivo USB.
 
 Linux/macOS/Windows:
 
@@ -82,6 +84,35 @@ USB0::0x2A8D::0x1102::<serial>::INSTR
 
 El ultimo recurso usado se guarda en `config.json`, que esta ignorado por git para
 evitar publicar identificadores locales o numeros de serie.
+
+### Linux USBTMC permissions
+
+Si `lsusb` ve la fuente pero PyVISA no lista ningun recurso, revisa permisos:
+
+```bash
+lsusb | grep -i keysight
+ls -l /dev/usbtmc* /dev/bus/usb/*/* 2>/dev/null | grep -E 'usbtmc|2a8d' || true
+```
+
+Para permitir acceso al usuario del grupo `plugdev`, crea una regla udev:
+
+```bash
+sudo tee /etc/udev/rules.d/99-keysight-e36312a.rules >/dev/null <<'EOF'
+SUBSYSTEM=="usb", ATTR{idVendor}=="2a8d", ATTR{idProduct}=="1102", GROUP="plugdev", MODE="0660"
+KERNEL=="usbtmc*", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="1102", GROUP="plugdev", MODE="0660"
+EOF
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Desconecta y reconecta la fuente despues de instalar la regla. Si necesitas una
+prueba temporal sin reiniciar reglas, puedes usar:
+
+```bash
+sudo chmod g+rw /dev/usbtmc0 /dev/bus/usb/001/007
+```
+
+Ajusta `001/007` al bus/dispositivo que reporte `lsusb`.
 
 ## Ejemplo de barrido DC
 

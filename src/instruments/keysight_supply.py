@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -12,6 +13,7 @@ from src.utils.units import CHANNELS, normalize_channel
 
 
 LOGGER = logging.getLogger(__name__)
+CHANNEL_NUMBERS = {"CH1": 1, "CH2": 2, "CH3": 3}
 
 
 @dataclass
@@ -42,19 +44,20 @@ class MockVisaResource:
             self.selected_channel = normalize_channel(command.split()[-1])
             return
 
-        state = self.channels[self.selected_channel]
+        channel = self._channel_from_command(command)
+        state = self.channels[channel]
         if upper.startswith("SOUR:FUNC"):
             return
-        if upper.startswith("SOUR:VOLT"):
-            state.voltage_v = float(command.split()[-1])
+        if upper.startswith(("SOUR:VOLT", "VOLT ")):
+            state.voltage_v = self._first_float(command)
             return
-        if upper.startswith("SOUR:CURR"):
-            state.current_limit_a = float(command.split()[-1])
+        if upper.startswith(("SOUR:CURR", "CURR ")):
+            state.current_limit_a = self._first_float(command)
             return
-        if upper == "OUTP ON":
+        if upper.startswith("OUTP ON"):
             state.output_on = True
             return
-        if upper == "OUTP OFF":
+        if upper.startswith("OUTP OFF"):
             state.output_on = False
             return
         if upper in {"*CLS", "*RST"}:
@@ -69,10 +72,17 @@ class MockVisaResource:
 
         if upper == "*IDN?":
             return "KEYSIGHT TECHNOLOGIES,E36312A,MOCK0000,1.0"
-        if upper == "MEAS:VOLT?":
-            return f"{self._measured_voltage():.9g}"
-        if upper == "MEAS:CURR?":
-            return f"{self._measured_current():.9g}"
+        channel = self._channel_from_command(command)
+        if upper.startswith("MEAS:VOLT?"):
+            return f"{self._measured_voltage(channel):.9g}"
+        if upper.startswith("MEAS:CURR?"):
+            return f"{self._measured_current(channel):.9g}"
+        if upper.startswith("VOLT?"):
+            return f"{self.channels[channel].voltage_v:.9g}"
+        if upper.startswith("CURR?"):
+            return f"{self.channels[channel].current_limit_a:.9g}"
+        if upper.startswith("OUTP?"):
+            return "1" if self.channels[channel].output_on else "0"
         if upper == "SYST:ERR?":
             return '0,"No error"'
         raise RuntimeError(f"Unsupported mock SCPI query: {command}")
@@ -80,21 +90,34 @@ class MockVisaResource:
     def close(self) -> None:
         self.closed = True
 
-    def _measured_current(self) -> float:
-        state = self.channels[self.selected_channel]
+    def _measured_current(self, channel: str) -> float:
+        state = self.channels[channel]
         if not state.output_on:
             return 0.0
         ideal_current = state.voltage_v / state.load_ohm
         return min(ideal_current, state.current_limit_a)
 
-    def _measured_voltage(self) -> float:
-        state = self.channels[self.selected_channel]
+    def _measured_voltage(self, channel: str) -> float:
+        state = self.channels[channel]
         if not state.output_on:
             return 0.0
         ideal_current = state.voltage_v / state.load_ohm
         if ideal_current > state.current_limit_a:
             return state.current_limit_a * state.load_ohm
         return state.voltage_v
+
+    def _channel_from_command(self, command: str) -> str:
+        match = re.search(r"@\s*([1-3])", command)
+        if match:
+            return normalize_channel(match.group(1))
+        return self.selected_channel
+
+    @staticmethod
+    def _first_float(command: str) -> float:
+        match = re.search(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?", command)
+        if not match:
+            raise RuntimeError(f"No numeric value found in mock SCPI command: {command}")
+        return float(match.group(0))
 
 
 class KeysightSupply:
@@ -157,21 +180,34 @@ class KeysightSupply:
     def set_voltage(self, channel: str | int, voltage: float) -> None:
         normalized = self.select_channel(channel)
         self.safety_limits.validate_voltage(normalized, voltage)
-        self._write(self.profile.source_voltage_mode)
-        self._write(self.profile.format("set_voltage", value=voltage))
+        if self.profile.source_voltage_mode:
+            self._write(self.profile.source_voltage_mode)
+        self._write(
+            self.profile.format(
+                "set_voltage",
+                value=voltage,
+                channel_number=self._channel_number(normalized),
+            )
+        )
 
     def set_current_limit(self, channel: str | int, current: float) -> None:
         normalized = self.select_channel(channel)
         self.safety_limits.validate_current(normalized, current)
-        self._write(self.profile.format("set_current", value=current))
+        self._write(
+            self.profile.format(
+                "set_current",
+                value=current,
+                channel_number=self._channel_number(normalized),
+            )
+        )
 
     def output_on(self, channel: str | int) -> None:
-        self.select_channel(channel)
-        self._write(self.profile.output_on)
+        normalized = self.select_channel(channel)
+        self._write(self.profile.format("output_on", channel_number=self._channel_number(normalized)))
 
     def output_off(self, channel: str | int) -> None:
-        self.select_channel(channel)
-        self._write(self.profile.output_off)
+        normalized = self.select_channel(channel)
+        self._write(self.profile.format("output_off", channel_number=self._channel_number(normalized)))
 
     def output_all_off(self) -> None:
         for channel in CHANNELS:
@@ -181,15 +217,61 @@ class KeysightSupply:
                 LOGGER.warning("Could not turn %s off: %s", channel, exc)
 
     def measure_voltage(self, channel: str | int) -> float:
-        self.select_channel(channel)
-        return float(self._query(self.profile.measure_voltage))
+        normalized = self.select_channel(channel)
+        return float(
+            self._query(
+                self.profile.format(
+                    "measure_voltage",
+                    channel_number=self._channel_number(normalized),
+                )
+            )
+        )
 
     def measure_current(self, channel: str | int) -> float:
-        self.select_channel(channel)
-        return float(self._query(self.profile.measure_current))
+        normalized = self.select_channel(channel)
+        return float(
+            self._query(
+                self.profile.format(
+                    "measure_current",
+                    channel_number=self._channel_number(normalized),
+                )
+            )
+        )
 
     def query_error(self) -> str:
         return self._query(self.profile.query_error)
+
+    def query_voltage_setpoint(self, channel: str | int) -> float:
+        normalized = self.select_channel(channel)
+        return float(
+            self._query(
+                self.profile.format(
+                    "query_voltage",
+                    channel_number=self._channel_number(normalized),
+                )
+            )
+        )
+
+    def query_current_limit(self, channel: str | int) -> float:
+        normalized = self.select_channel(channel)
+        return float(
+            self._query(
+                self.profile.format(
+                    "query_current",
+                    channel_number=self._channel_number(normalized),
+                )
+            )
+        )
+
+    def query_output_state(self, channel: str | int) -> bool:
+        normalized = self.select_channel(channel)
+        response = self._query(
+            self.profile.format(
+                "query_output",
+                channel_number=self._channel_number(normalized),
+            )
+        )
+        return response.strip().upper() in {"1", "ON"}
 
     def ramp_to_zero_and_off(
         self,
@@ -232,9 +314,23 @@ class KeysightSupply:
     def _write(self, command: str) -> None:
         LOGGER.debug("SCPI >> %s", command)
         self._require_resource().write(command)
+        self._raise_on_scpi_error(command)
 
     def _query(self, command: str) -> str:
         LOGGER.debug("SCPI ?? %s", command)
         response = str(self._require_resource().query(command)).strip()
         LOGGER.debug("SCPI << %s", response)
         return response
+
+    @staticmethod
+    def _channel_number(channel: str | int) -> int:
+        return CHANNEL_NUMBERS[normalize_channel(channel)]
+
+    def _raise_on_scpi_error(self, command: str) -> None:
+        if command.strip().upper() == self.profile.query_error:
+            return
+        response = str(self._require_resource().query(self.profile.query_error)).strip()
+        LOGGER.debug("SCPI << %s", response)
+        if response.startswith(("+0", "0,")):
+            return
+        raise RuntimeError(f"SCPI error after {command!r}: {response}")
