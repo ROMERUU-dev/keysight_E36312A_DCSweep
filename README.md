@@ -213,6 +213,24 @@ La pestana incluye presets:
 
 ### NMOS Output Curves
 
+Ejemplo real de barrido:
+
+```text
+.dc VDS 0 5 0.05 VGS 0 3.3 0.1
+```
+
+Configuracion recomendada en `LTspice DC Sweep`:
+
+```text
+1st Source: VDS -> CH1, Linear, Start 0 V, Stop 5 V, Increment 0.05 V
+2nd Source: VGS -> CH2, Linear, Start 0 V, Stop 3.3 V, Increment 0.1 V
+3rd Source: disabled
+Mock model: nmos
+X axis: Source1 value
+Y axis: CH1 Imeas
+Group curves by: Source2
+```
+
 Conexion textual:
 
 ```text

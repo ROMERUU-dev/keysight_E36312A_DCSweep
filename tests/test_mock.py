@@ -38,3 +38,21 @@ def test_mock_sweep_stops_on_compliance() -> None:
         assert points[-1].Imeas_A == 0.001
     finally:
         supply.safe_shutdown(close=True)
+
+
+def test_safe_shutdown_turns_all_mock_channels_off() -> None:
+    supply = KeysightSupply(MOCK_RESOURCE, mock=True)
+    supply.connect()
+    try:
+        for channel in ("CH1", "CH2", "CH3"):
+            supply.set_current_limit(channel, 0.1)
+            supply.set_voltage(channel, 1.0)
+            supply.output_on(channel)
+
+        supply.safe_shutdown(close=False)
+
+        for channel in ("CH1", "CH2", "CH3"):
+            assert supply.query_voltage_setpoint(channel) == 0.0
+            assert supply.query_output_state(channel) is False
+    finally:
+        supply.safe_shutdown(close=True)

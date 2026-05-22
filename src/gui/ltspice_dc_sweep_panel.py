@@ -38,6 +38,7 @@ from src.measurements.sweep_engine import (
     preset_sweep_configs,
     sweep_run_config_from_dict,
     sweep_run_config_to_dict,
+    validate_sweep_run_config,
 )
 from src.utils.units import CHANNELS
 
@@ -524,7 +525,7 @@ class LtspiceDCSweepPanel(QWidget):
 
     def _update_preview(self) -> None:
         try:
-            config = self.config()
+            config = validate_sweep_run_config(self.config())
             directive = generate_dc_directive(config.sources)
             points = generate_nested_sweep_points(config.sources)
             self.directive_label.setText(directive)

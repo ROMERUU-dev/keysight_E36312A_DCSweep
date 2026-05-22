@@ -160,6 +160,7 @@ def validate_sweep_run_config(
     limits: SafetyLimits | None = None,
 ) -> SweepRunConfig:
     limits = limits or SafetyLimits()
+    _validate_contiguous_source_slots(config.sources)
     active_sources = [normalize_source(source) for source in enabled_sources(config.sources)]
     if not active_sources:
         raise ValueError("Enable at least one LTspice sweep source")
@@ -295,14 +296,22 @@ def run_ltspice_dc_sweep(
             log_lines.append(f"Stop requested before point {index}")
             break
 
+        stop_before_measurement = False
         for source in active_sources:
+            if stop_requested():
+                log_lines.append(f"Stop requested while setting point {index}")
+                stop_before_measurement = True
+                break
             channel = source_channels[source.name]
             voltage = float(source_values[source.name])
             target_by_channel[channel] = voltage
             supply.set_voltage(channel, voltage)
+        if stop_before_measurement:
+            break
 
-        if config.settle_time_s:
-            time.sleep(config.settle_time_s)
+        if config.settle_time_s and not _wait_for_settle(config.settle_time_s, stop_requested):
+            log_lines.append(f"Stop requested during settle before point {index} measurement")
+            break
 
         measurements = _measure_channels(supply, active_channels, current_limits, target_by_channel, config)
         point = _make_point(
@@ -327,8 +336,8 @@ def run_ltspice_dc_sweep(
 
     if config.ramp_down_enabled:
         _ramp_down_active_channels(supply, active_channels, log_lines)
-    elif config.output_off_when_done:
-        _output_off_active_channels(supply, active_channels, log_lines)
+    if config.output_off_when_done:
+        _output_off_all_channels(supply, log_lines)
 
     output_dir: str | None = None
     if config.auto_export:
@@ -609,6 +618,26 @@ def _output_off_active_channels(supply: object, active_channels: set[str], log_l
             log_lines.append(f"Could not turn off {channel}: {exc}")
 
 
+def _output_off_all_channels(supply: object, log_lines: list[str]) -> None:
+    try:
+        supply.output_all_off()
+        return
+    except Exception as exc:
+        log_lines.append(f"Could not turn all outputs off at once: {exc}")
+    _output_off_active_channels(supply, set(CHANNELS), log_lines)
+
+
+def _wait_for_settle(duration_s: float, stop_requested: Callable[[], bool]) -> bool:
+    deadline = time.monotonic() + duration_s
+    while True:
+        if stop_requested():
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return True
+        time.sleep(min(remaining, 0.025))
+
+
 def _write_points_csv(points: list[SweepMeasurementPoint], path: Path) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=LTSPICE_SWEEP_COLUMNS)
@@ -631,6 +660,18 @@ def _run_directory(root: Path, started_at: datetime, sweep_name: str) -> Path:
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip()).strip("._")
     return slug or "ltspice_dc_sweep"
+
+
+def _validate_contiguous_source_slots(sources: list[SweepSource]) -> None:
+    seen_disabled = False
+    for index, source in enumerate(sources[:3], start=1):
+        if not source.enabled:
+            seen_disabled = True
+            continue
+        if seen_disabled:
+            raise ValueError(
+                f"Enable source slots in LTspice order; source {index} cannot be enabled after a disabled earlier source"
+            )
 
 
 def _validate_finite(value: float, label: str) -> None:
