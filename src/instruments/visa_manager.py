@@ -39,7 +39,7 @@ class VisaManager:
                 self._resource_manager = pyvisa.ResourceManager(self.backend)
         return self._resource_manager
 
-    def list_resources(self, include_mock: bool = True) -> list[str]:
+    def list_resources(self, include_mock: bool = False) -> list[str]:
         resources: list[str] = []
         if include_mock:
             resources.append(MOCK_RESOURCE)

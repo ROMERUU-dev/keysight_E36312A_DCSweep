@@ -3,24 +3,27 @@
 Aplicacion Python para controlar una fuente Keysight E36312A/E36300 de 3 canales
 mediante PyVISA/SCPI. La primera version incluye interfaz grafica con PySide6,
 control manual por canal, barridos DC con grafica I vs V en tiempo real,
-exportacion CSV, limites de seguridad y un instrumento mock para desarrollo sin
-hardware conectado.
+exportacion CSV, limites de seguridad y flujo de conexion para instrumento real.
+
+Documentacion completa:
+
+- [Manual de usuario en PDF](docs/manual_usuario.pdf)
+- [Fuente LaTeX del manual](docs/manual_usuario.tex)
 
 ## Estado actual
 
 Implementado:
 
 - Conexion VISA con listado de recursos, recurso manual y `*IDN?`.
-- Modo `Mock Instrument` para probar la GUI sin una fuente real.
 - Control manual de CH1, CH2 y CH3: voltaje, limite de corriente, ON/OFF y medicion.
 - Botones `All OFF`, `Ramp to 0 V and OFF` y `Emergency Stop`.
 - Barrido DC por canal con `V_start`, `V_stop`, `V_step`, `I_limit`, `settle time` y tolerancia de compliance.
-- Pestana `LTspice DC Sweep` con 1st/2nd/3rd Source, fuentes logicas,
+- Pestana `Advanced DC Sweep` con 1st/2nd/3rd Source, fuentes logicas,
   fuentes fijas, vista previa `.dc`, presets y barridos anidados.
 - Grafica I vs V en tiempo real con pyqtgraph.
 - Exportacion CSV con las columnas:
   `timestamp_iso, t_s, channel, Vset_V, Vmeas_V, Imeas_A, P_W, compliance_flag, notes`.
-- Exportacion automatica de barridos LTspice-style en
+- Exportacion automatica de barridos avanzados en
   `runs/YYYY-MM-DD_HH-MM-SS_<sweep_name>/` con `data.csv`, `metadata.json`,
   `plot.png`, `log.txt` y `sweep_config.json`.
 - Apagado seguro al cerrar la app por default.
@@ -64,20 +67,28 @@ usa `python3 -m venv .venv` si `python` no existe hasta activar el entorno.
 Con instrumento real:
 
 ```bash
+git clone https://github.com/ROMERUU-dev/keysight_E36312A_DCSweep.git
+cd keysight_E36312A_DCSweep
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 python app.py
 ```
 
-Con instrumento simulado:
+La app abre maximizada por defecto, con la barra superior normal para mover,
+minimizar, maximizar y cerrar. Presiona `F11` para entrar o salir de pantalla
+completa real; en ese modo el sistema oculta la barra superior. `Esc` tambien
+sale de pantalla completa. Si quieres abrirla en una ventana normal sin maximizar:
 
 ```bash
-python app.py --mock
+python app.py --windowed
 ```
 
-El modo mock responde a `*IDN?`, simula set voltage, set current, medicion de
-voltaje/corriente y compliance simple. Por defecto usa una carga interna de
-1 kohm. En la pestana `LTspice DC Sweep` tambien se puede elegir un mock
-`resistor`, `diode` o `nmos` para probar familias de curvas sin hardware. Es el
-modo recomendado para validar la interfaz antes de conectar hardware.
+Si quieres arrancar directamente en pantalla completa real:
+
+```bash
+python app.py --fullscreen
+```
 
 ## Conexion a Keysight E36312A
 
@@ -125,7 +136,7 @@ Ajusta `001/007` al bus/dispositivo que reporte `lsusb`.
 
 ## Ejemplo de barrido DC simple
 
-1. Conecta en modo real o `--mock`.
+1. Conecta el instrumento real.
 2. En `Simple DC Sweep`, selecciona `CH1`.
 3. Configura:
    - `V start`: 0 V
@@ -145,10 +156,10 @@ runs/sweeps/dc_sweep_latest.csv
 
 La carpeta `runs/` esta ignorada por git.
 
-## LTspice-style DC Sweep
+## Advanced DC Sweep
 
-La pestana `LTspice DC Sweep` imita la logica de configuracion de un barrido
-DC de LTspice, pero controla canales fisicos de una fuente Keysight E36312A.
+La pestana `Advanced DC Sweep` usa una logica de configuracion tipo `.dc`
+similar a LTspice, pero controla canales fisicos de una fuente Keysight E36312A.
 No simula SPICE: genera puntos de hardware, espera el `settle time`, mide
 voltaje/corriente reales y marca compliance si la fuente alcanza el limite de
 corriente configurado.
@@ -183,7 +194,7 @@ Orden de barrido:
 
 Para el ejemplo `.dc VDS 0 5 1 VGS 0 2 1`, la app ejecuta primero todos los
 valores de `VDS` con `VGS=0`, luego repite `VDS` con `VGS=1`, y asi
-sucesivamente. Esto produce curvas tipo LTspice para transistores.
+sucesivamente. Esto produce familias de curvas para transistores.
 
 ### Fuentes fijas
 
@@ -219,13 +230,12 @@ Ejemplo real de barrido:
 .dc VDS 0 5 0.05 VGS 0 3.3 0.1
 ```
 
-Configuracion recomendada en `LTspice DC Sweep`:
+Configuracion recomendada en `Advanced DC Sweep`:
 
 ```text
 1st Source: VDS -> CH1, Linear, Start 0 V, Stop 5 V, Increment 0.05 V
 2nd Source: VGS -> CH2, Linear, Start 0 V, Stop 3.3 V, Increment 0.1 V
 3rd Source: disabled
-Mock model: nmos
 X axis: Source1 value
 Y axis: CH1 Imeas
 Group curves by: Source2
@@ -257,9 +267,9 @@ Para graficar como familia de curvas:
 No conectes el gate directamente a voltajes altos sin proteccion. Usa limites
 conservadores y resistencias de proteccion si trabajas con MOSFET discreto.
 
-### Diferencias frente a LTspice
+### Diferencias frente a simulacion SPICE
 
-- LTspice calcula puntos ideales; aqui la fuente real puede entrar en compliance.
+- Una simulacion SPICE calcula puntos ideales; aqui la fuente real puede entrar en compliance.
 - El `settle time` importa porque hay capacitancias, cables y DUT reales.
 - El CSV guarda setpoints, mediciones, potencia y flags de compliance por canal.
 - `Emergency Stop` intenta poner todos los canales en 0 V, apagar salidas y
@@ -291,8 +301,8 @@ Las pruebas cubren:
 - Generacion de rangos de barrido.
 - Validacion de limites de seguridad.
 - Exportacion CSV.
-- Modo mock y barrido con compliance.
-- Generacion LTspice-style linear/list/log, orden de barridos anidados y
+- Barrido con compliance y apagado seguro.
+- Generacion de barridos avanzados linear/list/log, orden de barridos anidados y
   directiva `.dc`.
 
 ## Arquitectura
@@ -325,4 +335,4 @@ dispersos en la GUI.
 - Implementar curva de transferencia MOSFET con estimacion aproximada de `gm`
   y `Vth`.
 - Implementar curve tracer BJT con resistencia externa de base y calculo de beta.
-- Agregar pruebas con mocks de errores VISA/SCPI.
+- Agregar pruebas con errores VISA/SCPI simulados.

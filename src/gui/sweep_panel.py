@@ -51,7 +51,9 @@ class SweepPanel(QWidget):
         buttons.addWidget(self.export_button)
 
         self.status_label = QLabel("Idle")
+        self.status_label.setWordWrap(True)
         self.csv_label = QLabel("CSV: -")
+        self.csv_label.setWordWrap(True)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)

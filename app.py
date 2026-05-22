@@ -10,14 +10,19 @@ from src.utils.logger import setup_logging
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Keysight E36312A DC sweep GUI")
     parser.add_argument(
-        "--mock",
-        action="store_true",
-        help="Start connected to the built-in mock instrument.",
-    )
-    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable verbose SCPI/application logging.",
+    )
+    parser.add_argument(
+        "--fullscreen",
+        action="store_true",
+        help="Start the application in full screen mode.",
+    )
+    parser.add_argument(
+        "--windowed",
+        action="store_true",
+        help="Start the application in a normal window instead of maximized.",
     )
     return parser.parse_args()
 
@@ -39,8 +44,13 @@ def main() -> int:
         return 1
 
     app = QApplication(sys.argv)
-    window = MainWindow(mock=args.mock)
-    window.show()
+    window = MainWindow()
+    if args.windowed:
+        window.show()
+    elif args.fullscreen:
+        window.enter_full_screen()
+    else:
+        window.showMaximized()
     return app.exec()
 
 

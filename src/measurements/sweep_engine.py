@@ -163,7 +163,7 @@ def validate_sweep_run_config(
     _validate_contiguous_source_slots(config.sources)
     active_sources = [normalize_source(source) for source in enabled_sources(config.sources)]
     if not active_sources:
-        raise ValueError("Enable at least one LTspice sweep source")
+        raise ValueError("Enable at least one advanced DC sweep source")
     if len(active_sources) > 3:
         raise ValueError("Only 1st, 2nd and 3rd sources are supported")
 
@@ -405,7 +405,6 @@ def sweep_run_config_to_dict(config: SweepRunConfig) -> dict[str, Any]:
         "auto_export": config.auto_export,
         "output_root": config.output_root,
         "notes": config.notes,
-        "mock_model": config.mock_model,
         "x_axis": config.x_axis,
         "y_axis": config.y_axis,
         "group_by": config.group_by,
@@ -670,7 +669,7 @@ def _validate_contiguous_source_slots(sources: list[SweepSource]) -> None:
             continue
         if seen_disabled:
             raise ValueError(
-                f"Enable source slots in LTspice order; source {index} cannot be enabled after a disabled earlier source"
+                f"Enable source slots in advanced DC sweep order; source {index} cannot be enabled after a disabled earlier source"
             )
 
 

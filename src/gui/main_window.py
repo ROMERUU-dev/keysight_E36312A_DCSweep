@@ -6,8 +6,18 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QSplitter, QTabWidget
+from PySide6.QtCore import QObject, QRect, QThread, Qt, Signal, Slot
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import (
+    QFrame,
+    QMainWindow,
+    QMessageBox,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QTabWidget,
+    QWidget,
+)
 
 from src.gui.connection_panel import ConnectionPanel
 from src.gui.ltspice_dc_sweep_panel import LtspiceDCSweepPanel
@@ -17,7 +27,7 @@ from src.gui.settings_panel import SettingsPanel
 from src.gui.sweep_panel import SweepPanel
 from src.gui.transistor_panel import TransistorPanel
 from src.instruments.keysight_supply import KeysightSupply
-from src.instruments.visa_manager import MOCK_RESOURCE, VisaManager
+from src.instruments.visa_manager import VisaManager
 from src.measurements.data_export import export_sweep_csv
 from src.measurements.dc_sweep import SweepParameters, SweepPoint, run_dc_sweep
 from src.measurements.ltspice_dc_sweep import generate_dc_directive, generate_nested_sweep_points
@@ -110,11 +120,11 @@ class LtspiceSweepWorker(QObject):
                 on_point=self.point_ready.emit,
             )
         except Exception as exc:
-            LOGGER.exception("LTspice-style sweep failed")
+            LOGGER.exception("Advanced DC sweep failed")
             try:
                 self.supply.safe_shutdown(close=True)
             except Exception as shutdown_exc:
-                LOGGER.warning("Safe shutdown after LTspice sweep error failed: %s", shutdown_exc)
+                LOGGER.warning("Safe shutdown after advanced DC sweep error failed: %s", shutdown_exc)
             self.error.emit(str(exc))
         finally:
             self.finished.emit(result)
@@ -127,18 +137,18 @@ class MainWindow(QMainWindow):
     def __init__(
         self,
         *,
-        mock: bool = False,
         config_path: str | Path = "config.json",
     ) -> None:
         super().__init__()
         self.setWindowTitle("Keysight E36312A DC Sweep")
-        self.resize(1180, 760)
+        self.resize(1440, 900)
+        self._normal_geometry: QRect | None = None
 
         self.config_path = Path(config_path)
         self.config = self._load_config()
         self.visa_manager = VisaManager()
         self.safety_limits = SafetyLimits()
-        self.supply = KeysightSupply(mock=mock, safety_limits=self.safety_limits)
+        self.supply = KeysightSupply(safety_limits=self.safety_limits)
         self.sweep_points: list[SweepPoint] = []
         self.ltspice_sweep_points: list[SweepMeasurementPoint] = []
         self.sweep_thread: QThread | None = None
@@ -152,34 +162,48 @@ class MainWindow(QMainWindow):
         self.settings_panel = SettingsPanel(self.safety_limits)
         self.plot_panel = PlotPanel()
 
-        tabs = QTabWidget()
-        tabs.addTab(self.connection_panel, "Connection")
-        tabs.addTab(self.manual_panel, "Manual")
-        tabs.addTab(self.sweep_panel, "Simple DC Sweep")
-        tabs.addTab(self.ltspice_panel, "LTspice DC Sweep")
-        tabs.addTab(self.transistor_panel, "Transistor")
-        tabs.addTab(self.settings_panel, "Settings")
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setMinimumWidth(340)
+        self.tabs.setElideMode(Qt.ElideRight)
+        self.tabs.tabBar().setUsesScrollButtons(True)
+        self.tabs.tabBar().setExpanding(False)
+        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._add_control_tab(self.connection_panel, "Connection")
+        self._add_control_tab(self.manual_panel, "Manual")
+        self._add_control_tab(self.sweep_panel, "Simple DC Sweep")
+        self._add_control_tab(self.ltspice_panel, "Advanced DC Sweep")
+        self._add_control_tab(self.transistor_panel, "Transistor")
+        self._add_control_tab(self.settings_panel, "Settings")
 
-        splitter = QSplitter()
-        splitter.addWidget(tabs)
-        splitter.addWidget(self.plot_panel)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
+        self.plot_panel.setMinimumSize(320, 240)
+        self.plot_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        self.setCentralWidget(splitter)
+        self.splitter = QSplitter()
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(8)
+        self.splitter.addWidget(self.tabs)
+        self.splitter.addWidget(self.plot_panel)
+        self.splitter.setStretchFactor(0, 4)
+        self.splitter.setStretchFactor(1, 6)
+        self.splitter.setSizes([760, 1040])
 
+        self.setCentralWidget(self.splitter)
+
+        self._setup_window_actions()
         self._connect_signals()
         self.refresh_resources()
         self._apply_styles()
 
-        if mock:
-            self.connection_panel.select_mock()
-            QTimer.singleShot(0, lambda: self.connect_resource(MOCK_RESOURCE, True))
-        elif self.config.get("last_resource"):
-            self.connection_panel.set_resources(
-                self.visa_manager.list_resources(include_mock=True),
-                str(self.config["last_resource"]),
-            )
+    def _add_control_tab(self, widget: QWidget, title: str) -> None:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setWidget(widget)
+        self.tabs.addTab(scroll, title)
+
     def _connect_signals(self) -> None:
         self.connection_panel.refresh_requested.connect(self.refresh_resources)
         self.connection_panel.connect_requested.connect(self.connect_resource)
@@ -202,9 +226,63 @@ class MainWindow(QMainWindow):
         self.ltspice_panel.emergency_stop_requested.connect(self.emergency_stop)
         self.ltspice_panel.validate_requested.connect(self.validate_ltspice_sweep)
 
+    def _setup_window_actions(self) -> None:
+        view_menu = self.menuBar().addMenu("View")
+
+        fullscreen_action = QAction("Toggle Full Screen", self)
+        fullscreen_action.setShortcut("F11")
+        fullscreen_action.triggered.connect(self.toggle_full_screen)
+        view_menu.addAction(fullscreen_action)
+        self.addAction(fullscreen_action)
+
+        maximize_action = QAction("Maximize", self)
+        maximize_action.triggered.connect(self.showMaximized)
+        view_menu.addAction(maximize_action)
+        self.addAction(maximize_action)
+
     def _apply_styles(self) -> None:
         self.setStyleSheet(
             """
+            QMainWindow {
+                background-color: #f4f6f8;
+            }
+            QMenuBar {
+                background-color: #f4f6f8;
+                padding: 2px;
+            }
+            QTabWidget::pane {
+                border: 1px solid #c7ccd1;
+                background: #ffffff;
+            }
+            QTabBar::tab {
+                padding: 8px 13px;
+                min-height: 24px;
+            }
+            QGroupBox {
+                border: 1px solid #c7ccd1;
+                border-radius: 6px;
+                margin-top: 8px;
+                padding: 8px;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+            }
+            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox {
+                min-height: 28px;
+            }
+            QPlainTextEdit {
+                min-height: 46px;
+            }
+            QPushButton {
+                min-height: 30px;
+                padding: 5px 10px;
+            }
+            QSplitter::handle {
+                background-color: #d9dde2;
+            }
             QPushButton#emergencyButton {
                 background-color: #b00020;
                 color: white;
@@ -223,6 +301,12 @@ class MainWindow(QMainWindow):
             LOGGER.warning("Could not read config file: %s", exc)
             return {}
 
+    def _preferred_resource(self) -> str | None:
+        resource = str(self.config.get("last_resource", "")).strip()
+        if not resource or resource.upper().startswith("MOCK"):
+            return None
+        return resource
+
     def _save_config(self) -> None:
         data = {
             "last_resource": self.connection_panel.resource_combo.currentText().strip(),
@@ -232,20 +316,23 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def refresh_resources(self) -> None:
-        resources = self.visa_manager.list_resources(include_mock=True)
-        preferred = str(self.config.get("last_resource", "")) or None
+        resources = self.visa_manager.list_resources(include_mock=False)
+        preferred = self._preferred_resource()
         self.connection_panel.set_resources(resources, preferred)
 
-    @Slot(str, bool)
-    def connect_resource(self, resource: str, mock: bool) -> None:
+    @Slot(str)
+    def connect_resource(self, resource: str) -> None:
         try:
             if self.supply.connected:
                 self.supply.safe_shutdown(close=True)
 
-            resource = resource or MOCK_RESOURCE
+            resource = resource.strip()
+            if not resource:
+                raise RuntimeError("Select or enter a VISA resource before connecting.")
+            if resource.upper().startswith("MOCK"):
+                raise RuntimeError("This resource is disabled in this final app build.")
             self.supply = KeysightSupply(
                 resource,
-                mock=mock or resource.upper().startswith("MOCK"),
                 safety_limits=self.safety_limits,
             )
             self.supply.connect()
@@ -259,6 +346,39 @@ class MainWindow(QMainWindow):
             LOGGER.exception("Connection failed")
             self.connection_panel.set_status(f"Connection failed: {exc}")
             QMessageBox.critical(self, "Connection error", str(exc))
+
+    @Slot()
+    def toggle_full_screen(self) -> None:
+        if self.isFullScreen():
+            self.exit_full_screen()
+        else:
+            self.enter_full_screen()
+
+    @Slot()
+    def enter_full_screen(self) -> None:
+        if not self.isFullScreen():
+            if not self.isMaximized():
+                self._normal_geometry = self.geometry()
+            self.showFullScreen()
+
+    @Slot()
+    def exit_full_screen(self) -> None:
+        self.showNormal()
+        if self._normal_geometry is not None and self._normal_geometry.isValid():
+            self.setGeometry(self._normal_geometry)
+        elif self.width() > 1400 or self.height() > 900:
+            self.resize(1280, 820)
+
+    def keyPressEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
+        if event.key() == Qt.Key_F11:
+            self.toggle_full_screen()
+            event.accept()
+            return
+        if event.key() == Qt.Key_Escape and self.isFullScreen():
+            self.exit_full_screen()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     @Slot()
     def disconnect_resource(self) -> None:
@@ -460,8 +580,8 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def on_ltspice_sweep_error(self, message: str) -> None:
-        QMessageBox.critical(self, "LTspice sweep error", message)
-        self.connection_panel.set_status(f"LTspice sweep error: {message}")
+        QMessageBox.critical(self, "Advanced DC sweep error", message)
+        self.connection_panel.set_status(f"Advanced DC sweep error: {message}")
         self.connection_panel.set_connected(self.supply.connected)
 
     @Slot(object)
@@ -475,7 +595,7 @@ class MainWindow(QMainWindow):
             try:
                 self.plot_panel.save_png(Path(result.output_dir) / "plot.png")
             except Exception as exc:
-                LOGGER.warning("Could not save LTspice sweep plot: %s", exc)
+                LOGGER.warning("Could not save advanced DC sweep plot: %s", exc)
         self.ltspice_panel.set_status(f"Finished with {len(self.ltspice_sweep_points)} points")
         self.sweep_worker = None
         self.sweep_thread = None

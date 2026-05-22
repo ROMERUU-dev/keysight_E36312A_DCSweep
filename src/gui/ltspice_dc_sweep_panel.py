@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -87,27 +88,25 @@ class LtspiceDCSweepPanel(QWidget):
         self.sweep_name = QLineEdit("ltspice_dc_sweep")
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(self.presets.keys())
-        self.mock_model_combo = QComboBox()
-        self.mock_model_combo.addItem("Resistor", "resistor")
-        self.mock_model_combo.addItem("Diode", "diode")
-        self.mock_model_combo.addItem("NMOS", "nmos")
 
         top_form = QFormLayout()
         top_form.addRow("Sweep name", self.sweep_name)
         top_form.addRow("Preset", self._preset_row())
-        top_form.addRow("Mock model", self.mock_model_combo)
 
         self.source_tabs = QTabWidget()
         for index, title in enumerate(("1st Source", "2nd Source", "3rd Source"), start=1):
             tab, controls = self._source_tab(index)
             self.source_controls.append(controls)
             self.source_tabs.addTab(tab, title)
+        self.source_tabs.setMinimumWidth(280)
+        self.source_tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         fixed_group = self._fixed_sources_group()
         timing_group = self._timing_group()
         plot_group = self._plot_group()
 
         self.directive_label = QLabel(".dc")
+        self.directive_label.setWordWrap(True)
         self.directive_label.setTextInteractionFlags(self.directive_label.textInteractionFlags())
         self.point_count_label = QLabel("Points: -")
         preview_group = QGroupBox("DC Directive Preview")
@@ -115,7 +114,7 @@ class LtspiceDCSweepPanel(QWidget):
         preview_layout.addWidget(self.directive_label)
         preview_layout.addWidget(self.point_count_label)
 
-        buttons = QHBoxLayout()
+        buttons = QGridLayout()
         self.validate_button = QPushButton("Validate Sweep")
         self.start_button = QPushButton("Start Sweep")
         self.stop_button = QPushButton("Stop")
@@ -123,30 +122,44 @@ class LtspiceDCSweepPanel(QWidget):
         self.emergency_button.setObjectName("emergencyButton")
         self.save_button = QPushButton("Save Config")
         self.load_button = QPushButton("Load Config")
-        for button in (
+        for index, button in enumerate((
             self.validate_button,
             self.start_button,
             self.stop_button,
             self.emergency_button,
             self.save_button,
             self.load_button,
-        ):
-            buttons.addWidget(button)
+        )):
+            buttons.addWidget(button, index // 3, index % 3)
 
         self.status_label = QLabel("Idle")
+        self.status_label.setWordWrap(True)
         self.output_label = QLabel("Run folder: -")
+        self.output_label.setWordWrap(True)
 
-        layout = QVBoxLayout(self)
-        layout.addLayout(top_form)
-        layout.addWidget(self.source_tabs)
-        layout.addWidget(fixed_group)
-        layout.addWidget(timing_group)
-        layout.addWidget(plot_group)
-        layout.addWidget(preview_group)
-        layout.addLayout(buttons)
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.output_label)
-        layout.addStretch(1)
+        side_panel = QWidget()
+        side_panel.setMinimumWidth(260)
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.addWidget(fixed_group)
+        side_layout.addWidget(timing_group)
+        side_layout.addWidget(plot_group)
+        side_layout.addWidget(preview_group)
+        side_layout.addLayout(buttons)
+        side_layout.addWidget(self.status_label)
+        side_layout.addWidget(self.output_label)
+        side_layout.addStretch(1)
+
+        layout = QGridLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setHorizontalSpacing(10)
+        layout.setVerticalSpacing(8)
+        layout.addLayout(top_form, 0, 0, 1, 2)
+        layout.addWidget(self.source_tabs, 1, 0)
+        layout.addWidget(side_panel, 1, 1)
+        layout.setColumnStretch(0, 5)
+        layout.setColumnStretch(1, 4)
+        layout.setRowStretch(1, 1)
 
         self.validate_button.clicked.connect(self._emit_validate)
         self.start_button.clicked.connect(self._emit_start)
@@ -171,7 +184,7 @@ class LtspiceDCSweepPanel(QWidget):
             auto_export=self.auto_export.isChecked(),
             output_root=self.output_root.text().strip() or "runs",
             notes=self.notes.toPlainText().strip(),
-            mock_model=str(self.mock_model_combo.currentData()),
+            mock_model="resistor",
             x_axis=str(self.x_axis_combo.currentData()),
             y_axis=str(self.y_axis_combo.currentData()),
             group_by=str(self.group_combo.currentData()),
@@ -184,7 +197,6 @@ class LtspiceDCSweepPanel(QWidget):
 
     def set_config(self, config: SweepRunConfig) -> None:
         self.sweep_name.setText(config.sweep_name)
-        self._set_combo_data(self.mock_model_combo, config.mock_model)
         for index, controls in enumerate(self.source_controls):
             source = config.sources[index] if index < len(config.sources) else None
             self._set_source_controls(controls, source)
@@ -481,7 +493,7 @@ class LtspiceDCSweepPanel(QWidget):
             return
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save LTspice sweep config",
+            "Save advanced DC sweep config",
             str(Path("configs") / f"{config.sweep_name}.json"),
             "JSON files (*.json)",
         )
@@ -495,7 +507,7 @@ class LtspiceDCSweepPanel(QWidget):
     def _load_config(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Load LTspice sweep config",
+            "Load advanced DC sweep config",
             "configs",
             "JSON files (*.json)",
         )

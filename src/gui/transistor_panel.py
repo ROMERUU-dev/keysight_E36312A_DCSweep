@@ -7,9 +7,14 @@ class TransistorPanel(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("MOSFET Output Curves: ID vs VDS for multiple VGS values."))
-        layout.addWidget(QLabel("MOSFET Transfer Curve: ID vs VGS, gm, Vth, sqrt(ID)."))
-        layout.addWidget(QLabel("BJT Curve Tracer: IC vs VCE using an external base resistor."))
+        for text in (
+            "MOSFET Output Curves: ID vs VDS for multiple VGS values.",
+            "MOSFET Transfer Curve: ID vs VGS, gm, Vth, sqrt(ID).",
+            "BJT Curve Tracer: IC vs VCE using an external base resistor.",
+        ):
+            label = QLabel(text)
+            label.setWordWrap(True)
+            layout.addWidget(label)
 
         self.output_button = QPushButton("MOSFET Output Curves - Stage 2")
         self.transfer_button = QPushButton("MOSFET Transfer Curve - Stage 2")

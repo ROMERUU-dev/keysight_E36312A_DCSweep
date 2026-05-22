@@ -1,0 +1,399 @@
+\documentclass[11pt,letterpaper]{article}
+
+\usepackage[margin=0.85in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[hidelinks]{hyperref}
+\usepackage{array}
+\usepackage{longtable}
+
+\title{Keysight E36312A DC Sweep\\Manual de Usuario e Instalacion}
+\author{ROMERUU-dev}
+\date{2026-05-22}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Objetivo}
+
+Esta aplicacion controla una fuente Keysight E36312A/E36300 de tres canales por
+PyVISA/SCPI. Permite control manual, barridos DC simples, barridos DC avanzados
+con fuentes anidadas, graficas en tiempo real, exportacion de datos y apagado
+seguro de salidas.
+
+La version final de la interfaz esta orientada a instrumento real. El modo de
+simulacion queda reservado para pruebas internas y no aparece en la interfaz de
+usuario.
+
+\section{Requisitos}
+
+\subsection{Software}
+
+\begin{itemize}
+  \item Python 3.10 o superior.
+  \item Git.
+  \item Backend VISA: NI-VISA, Keysight IO Libraries o pyvisa-py.
+  \item Dependencias Python listadas en \texttt{requirements.txt}.
+\end{itemize}
+
+\subsection{Hardware}
+
+\begin{itemize}
+  \item Fuente Keysight E36312A o modelo compatible E36300.
+  \item Cable USB, LAN o GPIB segun la configuracion del laboratorio.
+  \item Para mediciones de transistores: protoboard o fixture, cables cortos,
+        resistencias de proteccion y un punto de GND comun.
+\end{itemize}
+
+\section{Instalacion desde GitHub}
+
+En una PC nueva, clona el repositorio y crea un entorno virtual:
+
+\begin{verbatim}
+git clone https://github.com/ROMERUU-dev/keysight_E36312A_DCSweep.git
+cd keysight_E36312A_DCSweep
+python -m venv .venv
+\end{verbatim}
+
+En Linux o macOS:
+
+\begin{verbatim}
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+\end{verbatim}
+
+En Windows PowerShell:
+
+\begin{verbatim}
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+\end{verbatim}
+
+Si en Linux el comando \texttt{python} no existe antes de activar el entorno,
+usa \texttt{python3}:
+
+\begin{verbatim}
+python3 -m venv .venv
+source .venv/bin/activate
+\end{verbatim}
+
+\section{Ejecucion}
+
+Modo recomendado:
+
+\begin{verbatim}
+python app.py
+\end{verbatim}
+
+La app abre maximizada, conservando la barra superior del sistema para mover,
+cerrar, minimizar y maximizar. Atajos y opciones:
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.33\linewidth}p{0.57\linewidth}}
+\textbf{Accion} & \textbf{Resultado} \\
+\hline
+\texttt{F11} & Entra o sale de pantalla completa real. \\
+\texttt{Esc} & Sale de pantalla completa real. \\
+\texttt{python app.py --windowed} & Abre en ventana normal sin maximizar. \\
+\texttt{python app.py --fullscreen} & Abre directamente en pantalla completa real. \\
+\texttt{python app.py --debug} & Activa logging mas detallado de SCPI y aplicacion. \\
+\end{longtable}
+
+Nota: en pantalla completa real, GNOME/Wayland oculta la barra superior de la
+ventana. Para mover o cerrar con botones del sistema, sal de pantalla completa
+con \texttt{F11} o \texttt{Esc}.
+
+\section{Conexion al instrumento}
+
+\begin{enumerate}
+  \item Conecta la fuente Keysight por USB, LAN o GPIB.
+  \item Abre la app.
+  \item En la pestana \texttt{Connection}, presiona \texttt{Refresh}.
+  \item Selecciona el recurso VISA detectado.
+  \item Si no aparece, escribe el recurso manualmente, por ejemplo:
+\end{enumerate}
+
+\begin{verbatim}
+USB0::0x2A8D::0x1102::<serial>::INSTR
+\end{verbatim}
+
+Despues presiona \texttt{Connect}. La app apaga las salidas al conectar y
+muestra la respuesta de \texttt{*IDN?}. El ultimo recurso usado se guarda en
+\texttt{config.json}, archivo local ignorado por Git.
+
+\section{Permisos USBTMC en Linux}
+
+Si Linux ve el dispositivo pero PyVISA no lista el recurso, revisa:
+
+\begin{verbatim}
+lsusb | grep -i keysight
+ls -l /dev/usbtmc* /dev/bus/usb/*/* 2>/dev/null | grep -E 'usbtmc|2a8d' || true
+\end{verbatim}
+
+Regla udev sugerida:
+
+\begin{verbatim}
+sudo tee /etc/udev/rules.d/99-keysight-e36312a.rules >/dev/null <<'EOF'
+SUBSYSTEM=="usb", ATTR{idVendor}=="2a8d", ATTR{idProduct}=="1102", GROUP="plugdev", MODE="0660"
+KERNEL=="usbtmc*", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="1102", GROUP="plugdev", MODE="0660"
+EOF
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+\end{verbatim}
+
+Desconecta y reconecta la fuente despues de aplicar la regla. Para una prueba
+temporal, ajusta el bus/dispositivo real y usa:
+
+\begin{verbatim}
+sudo chmod g+rw /dev/usbtmc0 /dev/bus/usb/001/007
+\end{verbatim}
+
+\section{Pestana Connection}
+
+\begin{itemize}
+  \item \texttt{Refresh}: vuelve a buscar recursos VISA.
+  \item \texttt{Connect}: abre el recurso seleccionado, apaga salidas y consulta
+        \texttt{*IDN?}.
+  \item \texttt{Disconnect}: ejecuta apagado seguro y cierra comunicacion.
+  \item \texttt{Emergency Stop}: detiene barridos activos, intenta poner salidas
+        en 0 V y apaga todos los canales.
+\end{itemize}
+
+\section{Pestana Manual}
+
+La pestana \texttt{Manual} controla CH1, CH2 y CH3 individualmente.
+
+\begin{itemize}
+  \item \texttt{Voltage}: voltaje objetivo del canal.
+  \item \texttt{Current limit}: limite de corriente.
+  \item \texttt{Set V}: envia el voltaje.
+  \item \texttt{Set I limit}: envia el limite de corriente.
+  \item \texttt{ON/OFF}: prende o apaga la salida del canal.
+  \item \texttt{Measure}: lee voltaje y corriente medidos.
+  \item \texttt{All OFF}: apaga todos los canales.
+  \item \texttt{Ramp to 0 V and OFF}: baja voltaje a 0 V y apaga salidas.
+\end{itemize}
+
+\section{Pestana Simple DC Sweep}
+
+Esta pestana ejecuta un barrido de voltaje en un solo canal.
+
+\begin{enumerate}
+  \item Conecta el instrumento.
+  \item Selecciona el canal.
+  \item Define \texttt{V start}, \texttt{V stop}, \texttt{V step},
+        \texttt{I limit}, \texttt{Settle time} y \texttt{Compliance tolerance}.
+  \item Presiona \texttt{Start Sweep}.
+  \item Observa la grafica en tiempo real.
+  \item Presiona \texttt{Export CSV} si quieres guardar el barrido simple.
+\end{enumerate}
+
+El CSV de barrido simple se guarda por defecto en:
+
+\begin{verbatim}
+runs/sweeps/dc_sweep_latest.csv
+\end{verbatim}
+
+\section{Pestana Advanced DC Sweep}
+
+\texttt{Advanced DC Sweep} permite configurar barridos tipo \texttt{.dc} con
+hasta tres fuentes logicas. Cada fuente logica se asigna a un canal fisico.
+
+\subsection{Orden de barrido}
+
+\begin{itemize}
+  \item \texttt{1st Source}: barrido rapido/interior.
+  \item \texttt{2nd Source}: barrido exterior, util para familias de curvas.
+  \item \texttt{3rd Source}: barrido mas externo.
+\end{itemize}
+
+Ejemplo:
+
+\begin{verbatim}
+.dc VDS 0 5 1 VGS 0 2 1
+\end{verbatim}
+
+La app ejecuta todos los valores de VDS con VGS=0, despues todos los valores de
+VDS con VGS=1, y asi sucesivamente.
+
+\subsection{Tipos de barrido}
+
+\begin{itemize}
+  \item \texttt{Linear}: inicio, fin e incremento lineal.
+  \item \texttt{Decade}: puntos por decada.
+  \item \texttt{Octave}: puntos por octava.
+  \item \texttt{List}: lista manual de valores.
+\end{itemize}
+
+\subsection{Fuentes fijas}
+
+La seccion \texttt{Fixed Sources} permite definir cada canal como:
+
+\begin{itemize}
+  \item \texttt{Off}: canal apagado.
+  \item \texttt{Fixed voltage}: canal a voltaje fijo durante todo el barrido.
+  \item \texttt{Swept source}: canal controlado por una fuente barrida.
+\end{itemize}
+
+La app valida que un canal no sea fuente fija y barrida al mismo tiempo.
+
+\subsection{Presets}
+
+\begin{itemize}
+  \item \texttt{Single Channel I-V}: barrido I-V de un canal.
+  \item \texttt{Diode I-V}: barrido bajo para diodos, con limite sugerido de
+        5 mA a 10 mA.
+  \item \texttt{NMOS Output Curves}: VDS en CH1 y VGS en CH2.
+  \item \texttt{NMOS Transfer Curve}: VDS fijo en CH1 y VGS barrido en CH2.
+  \item \texttt{BJT Output Curves}: VCE en CH1 y VBASE en CH2.
+\end{itemize}
+
+\section{Mediciones de transistores}
+
+La pestana \texttt{Transistor} es una pantalla de etapa futura. Hoy las
+mediciones reales de transistores se hacen desde \texttt{Advanced DC Sweep} con
+presets.
+
+\subsection{NMOS Output Curves}
+
+Configuracion:
+
+\begin{verbatim}
+1st Source: VDS -> CH1, Linear, Start 0 V, Stop 5 V, Increment 0.05 V
+2nd Source: VGS -> CH2, Linear, Start 0 V, Stop 3.3 V, Increment 0.1 V
+3rd Source: disabled
+X axis: Source1 value
+Y axis: CH1 Imeas
+Group curves by: Source2
+\end{verbatim}
+
+Conexion:
+
+\begin{verbatim}
+CH1+ -> Drain
+CH1- -> GND comun
+CH2+ -> Gate
+CH2- -> GND comun
+Source -> GND comun
+\end{verbatim}
+
+Interpretacion:
+
+\begin{itemize}
+  \item \texttt{ID} se aproxima con la corriente medida en CH1.
+  \item \texttt{IG} se observa con la corriente medida en CH2.
+  \item Cada valor de VGS produce una curva ID contra VDS.
+\end{itemize}
+
+\subsection{NMOS Transfer Curve}
+
+Usa VDS fijo en CH1 y barre VGS en CH2. Grafica:
+
+\begin{itemize}
+  \item X: \texttt{Source1 value} o \texttt{CH2 Vmeas}.
+  \item Y: \texttt{CH1 Imeas}.
+  \item Group curves by: \texttt{None}.
+\end{itemize}
+
+\subsection{BJT Output Curves}
+
+Usa CH1 como VCE y CH2 como VBASE. Debe existir una resistencia externa de base
+para limitar corriente. La corriente de colector se observa como corriente en
+CH1. No conectes la base directamente a una fuente sin resistencia de
+proteccion.
+
+\section{Archivos exportados}
+
+Los barridos avanzados se exportan automaticamente en:
+
+\begin{verbatim}
+runs/YYYY-MM-DD_HH-MM-SS_<sweep_name>/
+\end{verbatim}
+
+Contenido:
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.30\linewidth}p{0.60\linewidth}}
+\textbf{Archivo} & \textbf{Contenido} \\
+\hline
+\texttt{data.csv} & Datos por punto: setpoints, mediciones, potencia y compliance. \\
+\texttt{metadata.json} & IDN, recurso VISA, tiempos, directiva .dc, fuentes y limites. \\
+\texttt{sweep\_config.json} & Configuracion del barrido para repetirlo despues. \\
+\texttt{plot.png} & Captura de la grafica. \\
+\texttt{log.txt} & Eventos y condiciones de parada. \\
+\end{longtable}
+
+\section{Seguridad}
+
+\begin{itemize}
+  \item La app apaga salidas al conectar.
+  \item Ante errores VISA/SCPI, intenta apagar salidas.
+  \item Al cerrar, pregunta si debe poner salidas en 0 V y apagar.
+  \item \texttt{Emergency Stop} debe usarse si el DUT entra en una condicion no deseada.
+  \item Usa resistencias limitadoras y limites de corriente conservadores.
+\end{itemize}
+
+Limites por defecto:
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.20\linewidth}p{0.23\linewidth}p{0.23\linewidth}p{0.23\linewidth}}
+\textbf{Canal} & \textbf{Voltaje} & \textbf{Corriente} & \textbf{Potencia} \\
+\hline
+CH1 & 0 a 6 V & 0 a 5 A & 30 W max \\
+CH2 & 0 a 25 V & 0 a 1 A & 25 W max \\
+CH3 & 0 a 25 V & 0 a 1 A & 25 W max \\
+\end{longtable}
+
+\section{Solucion de problemas}
+
+\subsection{No aparece ningun recurso VISA}
+
+\begin{itemize}
+  \item Verifica cable y encendido del instrumento.
+  \item En Linux, revisa permisos USBTMC y regla udev.
+  \item Instala o revisa el backend VISA.
+  \item Prueba escribir manualmente el recurso VISA.
+\end{itemize}
+
+\subsection{La ventana no muestra barra superior}
+
+Eso ocurre solo en pantalla completa real. Presiona \texttt{F11} o \texttt{Esc}
+para volver a una ventana normal/maximizada con barra del sistema.
+
+\subsection{El barrido se detiene por compliance}
+
+El DUT esta demandando corriente cercana al limite configurado. Reduce voltaje,
+aumenta proteccion externa o ajusta el limite solo si es seguro para el circuito.
+
+\subsection{No se genera plot.png}
+
+El CSV y metadata son los archivos principales. Si la grafica no se guarda,
+revisa permisos de escritura en \texttt{runs/}. La medicion no se invalida por
+un fallo de captura de grafica.
+
+\section{Desarrollo y pruebas}
+
+Para correr pruebas:
+
+\begin{verbatim}
+source .venv/bin/activate
+python -m pytest
+\end{verbatim}
+
+Las pruebas cubren generacion de rangos, validacion de seguridad, exportacion,
+motor de barrido avanzado, layout principal y simulador interno.
+
+\section{Actualizacion en otra PC}
+
+Para actualizar una instalacion existente:
+
+\begin{verbatim}
+cd keysight_E36312A_DCSweep
+git pull
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python app.py
+\end{verbatim}
+
+\end{document}

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
@@ -12,11 +11,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.instruments.visa_manager import MOCK_RESOURCE
-
 
 class ConnectionPanel(QWidget):
-    connect_requested = Signal(str, bool)
+    connect_requested = Signal(str)
     disconnect_requested = Signal()
     refresh_requested = Signal()
     emergency_stop_requested = Signal()
@@ -27,7 +24,6 @@ class ConnectionPanel(QWidget):
         self.resource_combo.setEditable(True)
         self.resource_combo.setMinimumWidth(360)
 
-        self.mock_checkbox = QCheckBox("Mock Instrument")
         self.refresh_button = QPushButton("Refresh")
         self.connect_button = QPushButton("Connect")
         self.disconnect_button = QPushButton("Disconnect")
@@ -35,7 +31,9 @@ class ConnectionPanel(QWidget):
         self.emergency_button.setObjectName("emergencyButton")
 
         self.identity_label = QLabel("IDN: -")
+        self.identity_label.setWordWrap(True)
         self.status_label = QLabel("Disconnected")
+        self.status_label.setWordWrap(True)
 
         resource_row = QHBoxLayout()
         resource_row.addWidget(self.resource_combo, 1)
@@ -48,7 +46,6 @@ class ConnectionPanel(QWidget):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         form.addRow("VISA Resource", resource_row)
-        form.addRow("", self.mock_checkbox)
         layout.addLayout(form)
         layout.addLayout(buttons)
         layout.addWidget(self.emergency_button)
@@ -59,7 +56,6 @@ class ConnectionPanel(QWidget):
         self.connect_button.clicked.connect(self._emit_connect)
         self.disconnect_button.clicked.connect(self.disconnect_requested.emit)
         self.emergency_button.clicked.connect(self.emergency_stop_requested.emit)
-        self.mock_checkbox.toggled.connect(self._on_mock_toggled)
         self.set_connected(False)
 
     def set_resources(self, resources: list[str], preferred: str | None = None) -> None:
@@ -84,16 +80,7 @@ class ConnectionPanel(QWidget):
         self.disconnect_button.setEnabled(connected)
         self.resource_combo.setEnabled(not connected)
         self.refresh_button.setEnabled(not connected)
-        self.mock_checkbox.setEnabled(not connected)
-
-    def select_mock(self) -> None:
-        self.mock_checkbox.setChecked(True)
-        self.resource_combo.setEditText(MOCK_RESOURCE)
 
     def _emit_connect(self) -> None:
         resource = self.resource_combo.currentText().strip()
-        self.connect_requested.emit(resource, self.mock_checkbox.isChecked())
-
-    def _on_mock_toggled(self, checked: bool) -> None:
-        if checked:
-            self.resource_combo.setEditText(MOCK_RESOURCE)
+        self.connect_requested.emit(resource)
