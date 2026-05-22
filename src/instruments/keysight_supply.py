@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ class MockVisaResource:
     """Deterministic SCPI-like mock for GUI and test runs without hardware."""
 
     selected_channel: str = "CH1"
+    model: str = "resistor"
     channels: dict[str, MockChannelState] = field(
         default_factory=lambda: {channel: MockChannelState() for channel in CHANNELS}
     )
@@ -90,21 +92,63 @@ class MockVisaResource:
     def close(self) -> None:
         self.closed = True
 
+    def set_model(self, model: str) -> None:
+        normalized = model.strip().lower()
+        if normalized not in {"resistor", "diode", "nmos"}:
+            raise ValueError(f"Unsupported mock model: {model!r}")
+        self.model = normalized
+
     def _measured_current(self, channel: str) -> float:
         state = self.channels[channel]
         if not state.output_on:
             return 0.0
-        ideal_current = state.voltage_v / state.load_ohm
-        return min(ideal_current, state.current_limit_a)
+        ideal_current = self._ideal_current(channel)
+        limit = abs(state.current_limit_a)
+        if ideal_current >= 0:
+            return min(ideal_current, limit)
+        return max(ideal_current, -limit)
 
     def _measured_voltage(self, channel: str) -> float:
         state = self.channels[channel]
         if not state.output_on:
             return 0.0
-        ideal_current = state.voltage_v / state.load_ohm
-        if ideal_current > state.current_limit_a:
+        ideal_current = self._ideal_current(channel)
+        if self.model == "resistor" and ideal_current > state.current_limit_a:
             return state.current_limit_a * state.load_ohm
         return state.voltage_v
+
+    def _ideal_current(self, channel: str) -> float:
+        if self.model == "diode":
+            return self._diode_current(channel)
+        if self.model == "nmos":
+            return self._nmos_current(channel)
+        state = self.channels[channel]
+        return state.voltage_v / state.load_ohm
+
+    def _diode_current(self, channel: str) -> float:
+        voltage = self.channels[channel].voltage_v
+        if voltage <= 0:
+            return 0.0
+        saturation_current = 1e-12
+        n_vt = 0.052
+        exponent = min(voltage / n_vt, 60.0)
+        return saturation_current * (math.exp(exponent) - 1.0)
+
+    def _nmos_current(self, channel: str) -> float:
+        if channel == "CH2":
+            return 1e-9 if self.channels[channel].output_on else 0.0
+        if channel != "CH1":
+            return 0.0
+        vds = max(self.channels["CH1"].voltage_v, 0.0)
+        vgs = max(self.channels["CH2"].voltage_v, 0.0)
+        threshold = 1.0
+        k = 0.02
+        overdrive = vgs - threshold
+        if overdrive <= 0:
+            return 1e-9
+        if vds < overdrive:
+            return k * (overdrive * vds - (vds**2) / 2.0)
+        return 0.5 * k * overdrive**2
 
     def _channel_from_command(self, command: str) -> str:
         match = re.search(r"@\s*([1-3])", command)
@@ -305,6 +349,13 @@ class KeysightSupply:
         self.output_all_off()
         if close:
             self.disconnect()
+
+    def set_mock_model(self, model: str) -> None:
+        if not self.mock:
+            return
+        resource = self._require_resource()
+        if hasattr(resource, "set_model"):
+            resource.set_model(model)
 
     def _require_resource(self) -> Any:
         if self.resource is None:

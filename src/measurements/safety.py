@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from src.utils.units import CHANNELS, normalize_channel
@@ -34,6 +35,8 @@ class SafetyLimits:
 
     def validate_voltage(self, channel: str | int, voltage: float) -> None:
         normalized = self.validate_channel(channel)
+        if not math.isfinite(voltage):
+            raise SafetyError(f"{normalized} voltage must be a finite number")
         minimum = self.min_voltage_by_channel[normalized]
         maximum = self.max_voltage_by_channel[normalized]
         if not minimum <= voltage <= maximum:
@@ -44,6 +47,8 @@ class SafetyLimits:
 
     def validate_current(self, channel: str | int, current: float) -> None:
         normalized = self.validate_channel(channel)
+        if not math.isfinite(current):
+            raise SafetyError(f"{normalized} current limit must be a finite number")
         maximum = self.max_current_by_channel[normalized]
         if current < 0 or current > maximum:
             raise SafetyError(
@@ -53,6 +58,8 @@ class SafetyLimits:
 
     def validate_power(self, channel: str | int, voltage: float, current: float) -> None:
         normalized = self.validate_channel(channel)
+        if not math.isfinite(voltage) or not math.isfinite(current):
+            raise SafetyError(f"{normalized} power calculation requires finite voltage and current")
         maximum = self.max_power_by_channel[normalized]
         power = abs(voltage * current)
         if power > maximum:

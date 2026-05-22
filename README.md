@@ -15,14 +15,21 @@ Implementado:
 - Control manual de CH1, CH2 y CH3: voltaje, limite de corriente, ON/OFF y medicion.
 - Botones `All OFF`, `Ramp to 0 V and OFF` y `Emergency Stop`.
 - Barrido DC por canal con `V_start`, `V_stop`, `V_step`, `I_limit`, `settle time` y tolerancia de compliance.
+- Pestana `LTspice DC Sweep` con 1st/2nd/3rd Source, fuentes logicas,
+  fuentes fijas, vista previa `.dc`, presets y barridos anidados.
 - Grafica I vs V en tiempo real con pyqtgraph.
 - Exportacion CSV con las columnas:
   `timestamp_iso, t_s, channel, Vset_V, Vmeas_V, Imeas_A, P_W, compliance_flag, notes`.
+- Exportacion automatica de barridos LTspice-style en
+  `runs/YYYY-MM-DD_HH-MM-SS_<sweep_name>/` con `data.csv`, `metadata.json`,
+  `plot.png`, `log.txt` y `sweep_config.json`.
 - Apagado seguro al cerrar la app por default.
 
 Preparado para etapa 2:
 
-- MOSFET output curves: `ID` vs `VDS` para varios `VGS`.
+- Current sweep real. La arquitectura tiene modo `current`, pero por ahora se
+  mantiene deshabilitado porque la E36312A se usa como fuente de voltaje con
+  limite de corriente.
 - MOSFET transfer curve: `ID` vs `VGS`, `gm`, `Vth` y `sqrt(ID)`.
 - BJT curve tracer: `IC` vs `VCE` usando resistencia externa de base.
 
@@ -67,8 +74,10 @@ python app.py --mock
 ```
 
 El modo mock responde a `*IDN?`, simula set voltage, set current, medicion de
-voltaje/corriente y compliance simple con una carga interna de 1 kohm. Es el modo
-recomendado para validar la interfaz antes de conectar hardware.
+voltaje/corriente y compliance simple. Por defecto usa una carga interna de
+1 kohm. En la pestana `LTspice DC Sweep` tambien se puede elegir un mock
+`resistor`, `diode` o `nmos` para probar familias de curvas sin hardware. Es el
+modo recomendado para validar la interfaz antes de conectar hardware.
 
 ## Conexion a Keysight E36312A
 
@@ -114,10 +123,10 @@ sudo chmod g+rw /dev/usbtmc0 /dev/bus/usb/001/007
 
 Ajusta `001/007` al bus/dispositivo que reporte `lsusb`.
 
-## Ejemplo de barrido DC
+## Ejemplo de barrido DC simple
 
 1. Conecta en modo real o `--mock`.
-2. En `DC Sweep`, selecciona `CH1`.
+2. En `Simple DC Sweep`, selecciona `CH1`.
 3. Configura:
    - `V start`: 0 V
    - `V stop`: 1 V
@@ -136,10 +145,113 @@ runs/sweeps/dc_sweep_latest.csv
 
 La carpeta `runs/` esta ignorada por git.
 
+## LTspice-style DC Sweep
+
+La pestana `LTspice DC Sweep` imita la logica de configuracion de un barrido
+DC de LTspice, pero controla canales fisicos de una fuente Keysight E36312A.
+No simula SPICE: genera puntos de hardware, espera el `settle time`, mide
+voltaje/corriente reales y marca compliance si la fuente alcanza el limite de
+corriente configurado.
+
+Cada source logica tiene:
+
+- `Name of source to sweep`, por ejemplo `VIN`, `VDS`, `VGS`, `VCE`, `VBASE`.
+- `Physical channel`: `CH1`, `CH2` o `CH3`.
+- `Source mode`: `Voltage`. `Current` queda preparado para futuro, pero esta
+  deshabilitado.
+- `Type of sweep`: `Linear`, `Decade`, `Octave` o `List`.
+- `Start value`, `Stop value`, `Increment`, puntos por decada/octava o lista
+  manual de valores.
+
+Ejemplo 1:
+
+```text
+.dc VIN 0 5 0.1
+```
+
+Ejemplo 2:
+
+```text
+.dc VDS 0 5 0.05 VGS 0 3.3 0.1
+```
+
+Orden de barrido:
+
+- Source1 es el barrido rapido/interior.
+- Source2 es el barrido exterior y genera familias de curvas.
+- Source3 es el barrido mas externo.
+
+Para el ejemplo `.dc VDS 0 5 1 VGS 0 2 1`, la app ejecuta primero todos los
+valores de `VDS` con `VGS=0`, luego repite `VDS` con `VGS=1`, y asi
+sucesivamente. Esto produce curvas tipo LTspice para transistores.
+
+### Fuentes fijas
+
+En laboratorio a menudo se necesita una fuente fija ademas de fuentes barridas.
+La seccion `Fixed Sources` permite poner cada canal en uno de estos modos:
+
+- `Off`
+- `Fixed voltage`
+- `Swept source`
+
+La app valida que un mismo canal no este asignado como fuente fija y fuente
+barrida al mismo tiempo. Esto permite, por ejemplo, fijar `VDS` en `CH1` y
+barrer `VGS` en `CH2`.
+
+### Presets
+
+La pestana incluye presets:
+
+- `Single Channel I-V`: `VIN -> CH1`, `.dc VIN 0 5 0.1`.
+- `Diode I-V`: `VDIODE -> CH1`, `.dc VDIODE 0 1 0.01`, con limite sugerido de
+  5 mA a 10 mA.
+- `NMOS Output Curves`: `VDS -> CH1`, `VGS -> CH2`,
+  `.dc VDS 0 5 0.05 VGS 0 3.3 0.1`.
+- `NMOS Transfer Curve`: `VGS -> CH2` barrido con `VDS -> CH1` fijo.
+- `BJT Output Curves`: `VCE -> CH1`, `VBASE -> CH2`,
+  `.dc VCE 0 5 0.05 VBASE 0.55 0.75 0.01`.
+
+### NMOS Output Curves
+
+Conexion textual:
+
+```text
+CH1+ -> Drain
+CH1- -> GND comun
+CH2+ -> Gate
+CH2- -> GND comun
+Source -> GND comun
+```
+
+Mediciones:
+
+```text
+ID ~= corriente medida en CH1
+IG ~= corriente medida en CH2
+```
+
+Para graficar como familia de curvas:
+
+- X = `Source1 value` o `CH1 Vmeas`.
+- Y = `CH1 Imeas`.
+- Group curves by = `Source2`.
+
+No conectes el gate directamente a voltajes altos sin proteccion. Usa limites
+conservadores y resistencias de proteccion si trabajas con MOSFET discreto.
+
+### Diferencias frente a LTspice
+
+- LTspice calcula puntos ideales; aqui la fuente real puede entrar en compliance.
+- El `settle time` importa porque hay capacitancias, cables y DUT reales.
+- El CSV guarda setpoints, mediciones, potencia y flags de compliance por canal.
+- `Emergency Stop` intenta poner todos los canales en 0 V, apagar salidas y
+  dejar la comunicacion en estado seguro.
+
 ## Seguridad
 
 - La app arranca con salidas apagadas cuando se conecta.
-- Al cerrar, intenta poner voltajes en 0 V, apagar salidas y cerrar la comunicacion.
+- Al cerrar, pregunta si debe poner voltajes en 0 V, apagar salidas y cerrar la
+  comunicacion. La opcion por default es apagar todo.
 - Ante excepciones VISA/SCPI, intenta apagar salidas y dejar el instrumento seguro.
 - `Emergency Stop` detiene barridos activos y ejecuta apagado seguro.
 - Limites conservadores por default:
@@ -162,6 +274,8 @@ Las pruebas cubren:
 - Validacion de limites de seguridad.
 - Exportacion CSV.
 - Modo mock y barrido con compliance.
+- Generacion LTspice-style linear/list/log, orden de barridos anidados y
+  directiva `.dc`.
 
 ## Arquitectura
 
@@ -171,6 +285,8 @@ src/instruments/visa_manager.py
 src/instruments/keysight_supply.py
 src/instruments/scpi_profiles.py
 src/measurements/dc_sweep.py
+src/measurements/ltspice_dc_sweep.py
+src/measurements/sweep_engine.py
 src/measurements/safety.py
 src/measurements/data_export.py
 src/measurements/transistor_curves.py
@@ -187,8 +303,7 @@ dispersos en la GUI.
 - Agregar perfiles SCPI alternativos si algun modelo E36300 requiere cambios
   menores de comandos.
 - Guardar configuraciones de limite por canal en un panel editable.
-- Exportar cada barrido con nombre unico por timestamp.
-- Implementar familias de curvas MOSFET `ID` vs `VDS`.
+- Mejorar seleccion visual de grupos Source3 para barridos de tres fuentes.
 - Implementar curva de transferencia MOSFET con estimacion aproximada de `gm`
   y `Vth`.
 - Implementar curve tracer BJT con resistencia externa de base y calculo de beta.
